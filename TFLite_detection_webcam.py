@@ -31,6 +31,10 @@ from datetime import datetime
 import logging
 from logging.handlers import RotatingFileHandler
 import logging.config
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
+
+capture = None
 
 config = {
     "version": 1,
@@ -105,7 +109,8 @@ isPerson = False
 
 def setLight(value):
     # Not implemented
-    raise NotImplementedError
+    print("SET Light")
+    #raise NotImplementedError
 
 def applyLightData(data):
     print(data[2],data[3],data[4])
@@ -139,108 +144,110 @@ class checkingDate(threading.Thread):
             # should call applyData
 
             sys.stdout.flush()
-            time.sleep(3600)
+            time.sleep(5)
 
-current_lightData = None
+def init():
 
-# Define and parse input arguments
-parser = argparse.ArgumentParser()
-parser.add_argument('--modeldir', help='Folder the .tflite file is located in',
-                    required=True)
-parser.add_argument('--graph', help='Name of the .tflite file, if different than detect.tflite',
-                    default='detect.tflite')
-parser.add_argument('--labels', help='Name of the labelmap file, if different than labelmap.txt',
-                    default='labelmap.txt')
-parser.add_argument('--threshold', help='Minimum confidence threshold for displaying detected objects',
-                    default=0.5)
-parser.add_argument('--resolution', help='Desired webcam resolution in WxH. If the webcam does not support the resolution entered, errors may occur.',
-                    default='1280x720')
-parser.add_argument('--edgetpu', help='Use Coral Edge TPU Accelerator to speed up detection',
-                    action='store_true')
+    current_lightData = None
 
-args = parser.parse_args()
+    # Define and parse input arguments
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--modeldir', help='Folder the .tflite file is located in',
+                        required=True)
+    parser.add_argument('--graph', help='Name of the .tflite file, if different than detect.tflite',
+                        default='detect.tflite')
+    parser.add_argument('--labels', help='Name of the labelmap file, if different than labelmap.txt',
+                        default='labelmap.txt')
+    parser.add_argument('--threshold', help='Minimum confidence threshold for displaying detected objects',
+                        default=0.5)
+    parser.add_argument('--resolution', help='Desired webcam resolution in WxH. If the webcam does not support the resolution entered, errors may occur.',
+                        default='1280x720')
+    parser.add_argument('--edgetpu', help='Use Coral Edge TPU Accelerator to speed up detection',
+                        action='store_true')
 
-MODEL_NAME = args.modeldir
-GRAPH_NAME = args.graph
-LABELMAP_NAME = args.labels
-min_conf_threshold = float(args.threshold)
-resW, resH = args.resolution.split('x')
-imW, imH = int(resW), int(resH)
-use_TPU = args.edgetpu
+    args = parser.parse_args()
 
-# def updateCSV(line_to_override):
-#     with open('lightData.csv', 'wb') as b:
-#         writer = csv.writer(b)
-#         for line, row in enumerate(light_list):
-#             data = line_to_override.get(line, row)
-#             writer.writerow(data)
+    MODEL_NAME = args.modeldir
+    GRAPH_NAME = args.graph
+    LABELMAP_NAME = args.labels
+    min_conf_threshold = float(args.threshold)
+    resW, resH = args.resolution.split('x')
+    imW, imH = int(resW), int(resH)
+    use_TPU = args.edgetpu
 
-c = checkingDate()
-c.start()
+    # def updateCSV(line_to_override):
+    #     with open('lightData.csv', 'wb') as b:
+    #         writer = csv.writer(b)
+    #         for line, row in enumerate(light_list):
+    #             data = line_to_override.get(line, row)
+    #             writer.writerow(data)
 
-# Import TensorFlow libraries
-# If tflite_runtime is installed, import interpreter from tflite_runtime, else import from regular tensorflow
-# If using Coral Edge TPU, import the load_delegate library
-pkg = importlib.util.find_spec('tflite_runtime')
-if pkg:
-    from tflite_runtime.interpreter import Interpreter
+    c = checkingDate()
+    c.start()
+
+    # Import TensorFlow libraries
+    # If tflite_runtime is installed, import interpreter from tflite_runtime, else import from regular tensorflow
+    # If using Coral Edge TPU, import the load_delegate library
+    pkg = importlib.util.find_spec('tflite_runtime')
+    if pkg:
+        from tflite_runtime.interpreter import Interpreter
+        if use_TPU:
+            from tflite_runtime.interpreter import load_delegate
+    else:
+        from tensorflow.lite.python.interpreter import Interpreter
+        if use_TPU:
+            from tensorflow.lite.python.interpreter import load_delegate
+
+    # If using Edge TPU, assign filename for Edge TPU model
     if use_TPU:
-        from tflite_runtime.interpreter import load_delegate
-else:
-    from tensorflow.lite.python.interpreter import Interpreter
+        # If user has specified the name of the .tflite file, use that name, otherwise use default 'edgetpu.tflite'
+        if (GRAPH_NAME == 'detect.tflite'):
+            GRAPH_NAME = 'edgetpu.tflite'       
+
+    # Get path to current working directory
+    CWD_PATH = os.getcwd()
+
+    # Path to .tflite file, which contains the model that is used for object detection
+    PATH_TO_CKPT = os.path.join(CWD_PATH,MODEL_NAME,GRAPH_NAME)
+
+    # Path to label map file
+    PATH_TO_LABELS = os.path.join(CWD_PATH,MODEL_NAME,LABELMAP_NAME)
+
+    # Load the label map
+    with open(PATH_TO_LABELS, 'r') as f:
+        labels = [line.strip() for line in f.readlines()]
+
+    # Have to do a weird fix for label map if using the COCO "starter model" from
+    # https://www.tensorflow.org/lite/models/object_detection/overview
+    # First label is '???', which has to be removed.
+    if labels[0] == '???':
+        del(labels[0])
+
+    # Load the Tensorflow Lite model.
+    # If using Edge TPU, use special load_delegate argument
     if use_TPU:
-        from tensorflow.lite.python.interpreter import load_delegate
+        interpreter = Interpreter(model_path=PATH_TO_CKPT,
+                                experimental_delegates=[load_delegate('libedgetpu.so.1.0')])
+        print(PATH_TO_CKPT)
+    else:
+        interpreter = Interpreter(model_path=PATH_TO_CKPT)
 
-# If using Edge TPU, assign filename for Edge TPU model
-if use_TPU:
-    # If user has specified the name of the .tflite file, use that name, otherwise use default 'edgetpu.tflite'
-    if (GRAPH_NAME == 'detect.tflite'):
-        GRAPH_NAME = 'edgetpu.tflite'       
+    interpreter.allocate_tensors()
 
-# Get path to current working directory
-CWD_PATH = os.getcwd()
+    # Get model details
+    input_details = interpreter.get_input_details()
+    output_details = interpreter.get_output_details()
+    height = input_details[0]['shape'][1]
+    width = input_details[0]['shape'][2]
 
-# Path to .tflite file, which contains the model that is used for object detection
-PATH_TO_CKPT = os.path.join(CWD_PATH,MODEL_NAME,GRAPH_NAME)
+    floating_model = (input_details[0]['dtype'] == np.float32)
 
-# Path to label map file
-PATH_TO_LABELS = os.path.join(CWD_PATH,MODEL_NAME,LABELMAP_NAME)
+    input_mean = 127.5
+    input_std = 127.5
 
-# Load the label map
-with open(PATH_TO_LABELS, 'r') as f:
-    labels = [line.strip() for line in f.readlines()]
-
-# Have to do a weird fix for label map if using the COCO "starter model" from
-# https://www.tensorflow.org/lite/models/object_detection/overview
-# First label is '???', which has to be removed.
-if labels[0] == '???':
-    del(labels[0])
-
-# Load the Tensorflow Lite model.
-# If using Edge TPU, use special load_delegate argument
-if use_TPU:
-    interpreter = Interpreter(model_path=PATH_TO_CKPT,
-                              experimental_delegates=[load_delegate('libedgetpu.so.1.0')])
-    print(PATH_TO_CKPT)
-else:
-    interpreter = Interpreter(model_path=PATH_TO_CKPT)
-
-interpreter.allocate_tensors()
-
-# Get model details
-input_details = interpreter.get_input_details()
-output_details = interpreter.get_output_details()
-height = input_details[0]['shape'][1]
-width = input_details[0]['shape'][2]
-
-floating_model = (input_details[0]['dtype'] == np.float32)
-
-input_mean = 127.5
-input_std = 127.5
-
-# Initialize frame rate calculation
-frame_rate_calc = 1
-freq = cv2.getTickFrequency()
+    # Initialize frame rate calculation
+    frame_rate_calc = 1
+    freq = cv2.getTickFrequency()
 
 
 
@@ -313,20 +320,74 @@ def detect():
         # Press 'q' to quit
         # if cv2.waitKey(1) == ord('q'):
         #     break
-        yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n'+ cv2.imencode('.jpg', frame)[1].tostring() + b'\r\n')
+        # yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n'+ cv2.imencode('.jpg', frame)[1].tostring() + b'\r\n')
 
     # Clean up
-    cv2.destroyAllWindows()
+    # cv2.destroyAllWindows()
     videostream.stop()
 
-app = Flask(__name__)
 
-@app.route('/')
-def hello():
-    return "Server Established!"
+class CamHandler(BaseHTTPRequestHandler):
+    
+    def do_GET(self):
+        if self.path.endswith('.mjpg'):
+            self.send_response(200)
+            self.send_header(
+                'Content-type',
+                'multipart/x-mixed-replace; boundary=--jpgboundary'
+            )
+            self.end_headers()
+            while True:
+                try:
+
+                    rc, img = capture.read()
+                    if not rc:
+                        continue
+                    img_str = cv2.imencode('.jpg', img)[1].tostring()
+
+                    self.send_header('Content-type', 'image/jpeg')
+                    self.end_headers()
+                    self.wfile.write(img_str)
+                    self.wfile.write(b"\r\n--jpgboundary\r\n")
+
+                except KeyboardInterrupt:
+                    self.wfile.write(b"\r\n--jpgboundary--\r\n")
+                    break
+                except BrokenPipeError:
+                    continue
+            return
+
+        if self.path.endswith('.html'):
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            self.wfile.write(b'<html><head></head><body>')
+            self.wfile.write(b'<img src="http://127.0.0.1:8080/cam.mjpg"/>')
+            self.wfile.write(b'</body></html>')
+            return
+
+
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    """Handle requests in a separate thread."""
+
+
+def main():
+
+    global capture
+    capture = cv2.VideoCapture(0)
+    global img
+    try:
+        server = ThreadedHTTPServer(('localhost', 8080), CamHandler)
+        print("server started at http://127.0.0.1:8080/cam.html")
+        server.serve_forever()
+    except KeyboardInterrupt:
+        capture.release()
+        server.socket.close()
 
 if __name__ == '__main__':
-    root_logger = logging.getLogger()
-    logging.info("Started!")
     # detect()
-    app.run(debug=True, host='0.0.0.0', port=8000, threaded=True)
+    logging.info("Started!")
+    init()
+    main()
+    # app.run(debug=True, host='0.0.0.0', port=8000, threaded=True)
+
