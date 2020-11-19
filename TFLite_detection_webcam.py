@@ -1,3 +1,5 @@
+#!/tflite1-env
+
 ######## Webcam Object Detection Using Tensorflow-trained Classifier #########
 #
 # Author: Evan Juras
@@ -22,12 +24,46 @@ import sys
 import time
 from threading import Thread
 import importlib.util
+from flask import Flask,request, Response
+import csv
+import threading
+from datetime import datetime
+import logging
+from logging.handlers import RotatingFileHandler
+import logging.config
+
+config = {
+    "version": 1,
+    "formatters": {
+        "simple": {"format": "[%(name)s] %(message)s"},
+        "complex": {
+            "format": "%(asctime)s %(levelname)s [%(name)s] [%(filename)s:%(lineno)d] - %(message)s"
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "simple",
+            "level": "INFO",
+        },
+        "file": {
+            "class": "logging.FileHandler",
+            "filename": "info.log",
+            "formatter": "complex",
+            "level": "INFO",
+        },
+    },
+    "root": {"handlers": ["console", "file"], "level": "INFO"},
+    "loggers": {"parent": {"level": "INFO"}, "parent.child": {"level": "INFO"},},
+}
+
+logging.config.dictConfig(config)
 
 # Define VideoStream class to handle streaming of video from webcam in separate processing thread
 # Source - Adrian Rosebrock, PyImageSearch: https://www.pyimagesearch.com/2015/12/28/increasing-raspberry-pi-fps-with-python-and-opencv/
 class VideoStream:
     """Camera object that controls video streaming from the Picamera"""
-    def __init__(self,resolution=(640,480),framerate=30):
+    def __init__(self,resolution=(640,480),framerate=8):
         # Initialize the PiCamera and the camera image stream
         self.stream = cv2.VideoCapture(0)
         ret = self.stream.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
@@ -65,6 +101,48 @@ class VideoStream:
 	# Indicate that the camera and thread should be stopped
         self.stopped = True
 
+isPerson = False
+
+def setLight(value):
+    # Not implemented
+    raise NotImplementedError
+
+def applyLightData(data):
+    print(data[2],data[3],data[4])
+    global isPerson
+    lightValue = data[3] if isPerson else data[4]
+    print(f"Applying Light Data -isPerson: {str(isPerson)} Changed light to:{str(data[4])}")
+    logging.info(f"Applying Light Data -isPerson: {str(isPerson)} Changed light to:{str(data[4])}")
+    setLight(lightValue)
+
+class checkingDate(threading.Thread):
+    def __init__(self):
+        self._start = None
+        threading.Thread.__init__(self)
+
+    def run(self):
+        self._start = time.time()
+        global current_lightData
+
+        while True:
+            currentTime = datetime.now()
+            month = currentTime.strftime("%m")
+            hour = currentTime.strftime("%H")
+            
+            print('현재 월, 시간:' + month, hour)
+            line_to_read = (int(month)-1)*24+int(hour)
+            csvData = open('lightData.csv', 'r')
+            lines = csvData.readlines()
+
+            current_lightData = lines[line_to_read+1]
+            applyLightData(eval(current_lightData))
+            # should call applyData
+
+            sys.stdout.flush()
+            time.sleep(3600)
+
+current_lightData = None
+
 # Define and parse input arguments
 parser = argparse.ArgumentParser()
 parser.add_argument('--modeldir', help='Folder the .tflite file is located in',
@@ -89,6 +167,16 @@ min_conf_threshold = float(args.threshold)
 resW, resH = args.resolution.split('x')
 imW, imH = int(resW), int(resH)
 use_TPU = args.edgetpu
+
+# def updateCSV(line_to_override):
+#     with open('lightData.csv', 'wb') as b:
+#         writer = csv.writer(b)
+#         for line, row in enumerate(light_list):
+#             data = line_to_override.get(line, row)
+#             writer.writerow(data)
+
+c = checkingDate()
+c.start()
 
 # Import TensorFlow libraries
 # If tflite_runtime is installed, import interpreter from tflite_runtime, else import from regular tensorflow
@@ -154,75 +242,91 @@ input_std = 127.5
 frame_rate_calc = 1
 freq = cv2.getTickFrequency()
 
-# Initialize video stream
-videostream = VideoStream(resolution=(imW,imH),framerate=30).start()
-time.sleep(1)
 
-#for frame1 in camera.capture_continuous(rawCapture, format="bgr",use_video_port=True):
-while True:
 
-    # Start timer (for calculating frame rate)
-    t1 = cv2.getTickCount()
+def detect():
+    # Initialize video stream
+    videostream = VideoStream(resolution=(imW,imH),framerate=30).start()
+    time.sleep(1)
 
-    # Grab frame from video stream
-    frame1 = videostream.read()
+    #for frame1 in camera.capture_continuous(rawCapture, format="bgr",use_video_port=True):
+    while True:
 
-    # Acquire frame and resize to expected shape [1xHxWx3]
-    frame = frame1.copy()
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    frame_resized = cv2.resize(frame_rgb, (width, height))
-    input_data = np.expand_dims(frame_resized, axis=0)
+        # Start timer (for calculating frame rate)
+        t1 = cv2.getTickCount()
 
-    # Normalize pixel values if using a floating model (i.e. if model is non-quantized)
-    if floating_model:
-        input_data = (np.float32(input_data) - input_mean) / input_std
+        # Grab frame from video stream
+        frame1 = videostream.read()
 
-    # Perform the actual detection by running the model with the image as input
-    interpreter.set_tensor(input_details[0]['index'],input_data)
-    interpreter.invoke()
+        # Acquire frame and resize to expected shape [1xHxWx3]
+        frame = frame1.copy()
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame_resized = cv2.resize(frame_rgb, (width, height))
+        input_data = np.expand_dims(frame_resized, axis=0)
 
-    # Retrieve detection results
-    boxes = interpreter.get_tensor(output_details[0]['index'])[0] # Bounding box coordinates of detected objects
-    classes = interpreter.get_tensor(output_details[1]['index'])[0] # Class index of detected objects
-    scores = interpreter.get_tensor(output_details[2]['index'])[0] # Confidence of detected objects
-    #num = interpreter.get_tensor(output_details[3]['index'])[0]  # Total number of detected objects (inaccurate and not needed)
+        # Normalize pixel values if using a floating model (i.e. if model is non-quantized)
+        if floating_model:
+            input_data = (np.float32(input_data) - input_mean) / input_std
 
-    # Loop over all detections and draw detection box if confidence is above minimum threshold
-    for i in range(len(scores)):
-        if ((scores[i] > min_conf_threshold) and (scores[i] <= 1.0)):
+        # Perform the actual detection by running the model with the image as input
+        interpreter.set_tensor(input_details[0]['index'],input_data)
+        interpreter.invoke()
 
-            # Get bounding box coordinates and draw box
-            # Interpreter can return coordinates that are outside of image dimensions, need to force them to be within image using max() and min()
-            ymin = int(max(1,(boxes[i][0] * imH)))
-            xmin = int(max(1,(boxes[i][1] * imW)))
-            ymax = int(min(imH,(boxes[i][2] * imH)))
-            xmax = int(min(imW,(boxes[i][3] * imW)))
-            
-            cv2.rectangle(frame, (xmin,ymin), (xmax,ymax), (10, 255, 0), 2)
+        # Retrieve detection results
+        boxes = interpreter.get_tensor(output_details[0]['index'])[0] # Bounding box coordinates of detected objects
+        classes = interpreter.get_tensor(output_details[1]['index'])[0] # Class index of detected objects
+        scores = interpreter.get_tensor(output_details[2]['index'])[0] # Confidence of detected objects
+        #num = interpreter.get_tensor(output_details[3]['index'])[0]  # Total number of detected objects (inaccurate and not needed)
 
-            # Draw label
-            object_name = labels[int(classes[i])] # Look up object name from "labels" array using class index
-            label = '%s: %d%%' % (object_name, int(scores[i]*100)) # Example: 'person: 72%'
-            labelSize, baseLine = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2) # Get font size
-            label_ymin = max(ymin, labelSize[1] + 10) # Make sure not to draw label too close to top of window
-            cv2.rectangle(frame, (xmin, label_ymin-labelSize[1]-10), (xmin+labelSize[0], label_ymin+baseLine-10), (255, 255, 255), cv2.FILLED) # Draw white box to put label text in
-            cv2.putText(frame, label, (xmin, label_ymin-7), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2) # Draw label text
+        # Loop over all detections and draw detection box if confidence is above minimum threshold
+        for i in range(len(scores)):
+            if ((scores[i] > min_conf_threshold) and (scores[i] <= 1.0)):
 
-    # Draw framerate in corner of frame
-    cv2.putText(frame,'FPS: {0:.2f}'.format(frame_rate_calc),(30,50),cv2.FONT_HERSHEY_SIMPLEX,1,(255,255,0),2,cv2.LINE_AA)
+                # Get bounding box coordinates and draw box
+                # Interpreter can return coordinates that are outside of image dimensions, need to force them to be within image using max() and min()
+                ymin = int(max(1,(boxes[i][0] * imH)))
+                xmin = int(max(1,(boxes[i][1] * imW)))
+                ymax = int(min(imH,(boxes[i][2] * imH)))
+                xmax = int(min(imW,(boxes[i][3] * imW)))
+                
+                cv2.rectangle(frame, (xmin,ymin), (xmax,ymax), (10, 255, 0), 2)
 
-    # All the results have been drawn on the frame, so it's time to display it.
-    cv2.imshow('Object detector', frame)
+                # Draw label
+                object_name = labels[int(classes[i])] # Look up object name from "labels" array using class index
+                label = '%s: %d%%' % (object_name, int(scores[i]*100)) # Example: 'person: 72%'
+                labelSize, baseLine = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2) # Get font size
+                label_ymin = max(ymin, labelSize[1] + 10) # Make sure not to draw label too close to top of window
+                cv2.rectangle(frame, (xmin, label_ymin-labelSize[1]-10), (xmin+labelSize[0], label_ymin+baseLine-10), (255, 255, 255), cv2.FILLED) # Draw white box to put label text in
+                cv2.putText(frame, label, (xmin, label_ymin-7), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2) # Draw label text
 
-    # Calculate framerate
-    t2 = cv2.getTickCount()
-    time1 = (t2-t1)/freq
-    frame_rate_calc= 1/time1
+        # Draw framerate in corner of frame
+        cv2.putText(frame,'FPS: {0:.2f}'.format(frame_rate_calc),(30,50),cv2.FONT_HERSHEY_SIMPLEX,1,(255,255,0),2,cv2.LINE_AA)
 
-    # Press 'q' to quit
-    if cv2.waitKey(1) == ord('q'):
-        break
+        # All the results have been drawn on the frame, so it's time to display it.
+        # cv2.imshow('Object detector', frame)
 
-# Clean up
-cv2.destroyAllWindows()
-videostream.stop()
+        # Calculate framerate
+        t2 = cv2.getTickCount()
+        time1 = (t2-t1)/freq
+        frame_rate_calc= 1/time1
+
+        # Press 'q' to quit
+        # if cv2.waitKey(1) == ord('q'):
+        #     break
+        yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n'+ cv2.imencode('.jpg', frame)[1].tostring() + b'\r\n')
+
+    # Clean up
+    cv2.destroyAllWindows()
+    videostream.stop()
+
+app = Flask(__name__)
+
+@app.route('/')
+def hello():
+    return "Server Established!"
+
+if __name__ == '__main__':
+    root_logger = logging.getLogger()
+    logging.info("Started!")
+    # detect()
+    app.run(debug=True, host='0.0.0.0', port=8000, threaded=True)
