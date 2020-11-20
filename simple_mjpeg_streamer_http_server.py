@@ -6,8 +6,9 @@ capture = None
 
 
 class CamHandler(BaseHTTPRequestHandler):
-
+    print("cam handler")
     def do_GET(self):
+        print("do_get")
         if self.path.endswith('.mjpg'):
             self.send_response(200)
             self.send_header(
@@ -16,6 +17,7 @@ class CamHandler(BaseHTTPRequestHandler):
             )
             self.end_headers()
             while True:
+                print("while")
                 try:
 
                     rc, img = capture.read()
@@ -58,6 +60,7 @@ def main():
         server = ThreadedHTTPServer(('localhost', 8080), CamHandler)
         print("server started at http://127.0.0.1:8080/cam.html")
         server.serve_forever()
+        print("serve forever!")
     except KeyboardInterrupt:
         capture.release()
         server.socket.close()
