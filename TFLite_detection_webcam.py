@@ -428,7 +428,7 @@ class CamHandler(BaseHTTPRequestHandler):
                                 frame_counter = 0 #Or whatever as long as it is the same as next line
 
                             gif.set(cv2.CAP_PROP_POS_FRAMES, frame_counter)
-                            print("waiting...:")
+                            print("Loading...")
                             # Grab frame from video stream
                             img_str = cv2.imencode('.jpg', gif_frame)[1].tostring()
                             self.send_header('Content-type', 'image/jpeg')
