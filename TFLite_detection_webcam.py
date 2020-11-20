@@ -1,4 +1,4 @@
-#!/tflite1-env
+#!/tflite1-env1
 # Import packages
 import os
 import argparse
@@ -17,7 +17,7 @@ from logging.handlers import RotatingFileHandler
 import logging.config
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
-
+from TimerReset import TimerReset
 
 # Define and parse input arguments
 parser = argparse.ArgumentParser()
@@ -46,7 +46,8 @@ use_TPU = args.edgetpu
 capture = None
 current_lightData = None
 isPerson = False
-
+personFound = False
+isTimer = False
 # Log conifgs
 current_dir = os.path.dirname(os.path.realpath(__file__))
 current_file = os.path.basename(__file__)
@@ -137,6 +138,8 @@ input_std = 127.5
 frame_rate_calc = 1
 freq = cv2.getTickFrequency()
 
+# Reset Timer Value
+RESET_SEC = 5
 
 # Define VideoStream class to handle streaming of video from webcam in separate processing thread
 # Source - Adrian Rosebrock, PyImageSearch: https://www.pyimagesearch.com/2015/12/28/increasing-raspberry-pi-fps-with-python-and-opencv/
@@ -189,7 +192,16 @@ def setLight(value):
 def applyLightData(data):
     print(data[2],data[3],data[4])
     global isPerson
-    lightValue = data[3] if isPerson else data[4]
+    global personFound
+    global isTimer
+    if isPerson:
+        lightValue = data[3]
+    else :
+        lightValue = data[4]
+        isTimer = False
+        personFound = False
+        
+    # lightValue = data[3] if isPerson else data[4]
     print(f"Applying Light Data -isPerson: {str(isPerson)} Changed light to:{str(data[4])}")
     myLogger.info(f"Applying Light Data -isPerson: {str(isPerson)} Changed light to:{str(data[4])}")
     setLight(lightValue)
@@ -218,6 +230,18 @@ class checkingDate(threading.Thread):
             # should call applyData
 
             sys.stdout.flush()
+            time.sleep(3600)
+
+class waitingSec(threading.Thread):
+    def __init__(self,waitfor=5):
+        self._start = None
+        threading.Thread.__init__(self)
+
+    def stop(self):
+        self.__stop = True
+
+    def run(self):
+        while True:
             time.sleep(5)
 
 frame = None
@@ -244,9 +268,18 @@ class initDetector(threading.Thread):
         global frame_rate_calc
         global frame
         global width, height
+        global current_lightData
+        global personFound
+        global isTimer
+        global RESET_SEC
 
         videostream = VideoStream(resolution=(imW,imH),framerate=8,video=0).start()
         time.sleep(1)
+
+        timer = None
+        isTimer = False
+        personFound = False
+
         #for frame1 in camera.capture_continuous(rawCapture, format="bgr",use_video_port=True):
         while True:
             print("detecting!")
@@ -299,10 +332,9 @@ class initDetector(threading.Thread):
                     cv2.putText(frame, label, (xmin, label_ymin-7), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2) # Draw label text
 
                     if object_name == "person" and int(scores[i]*100 > 50):
-                        print("person found! call applyData")
                         isPerson = True
-                        # if person not found wait for 5 sec, and apply.
-                        # if new person appears then apply 5 sec again.
+                        break
+                    else: isPerson = False
 
                     
             # Draw framerate in corner of frame
@@ -311,6 +343,36 @@ class initDetector(threading.Thread):
             t2 = cv2.getTickCount()
             time1 = (t2-t1)/freq
             frame_rate_calc= 1/time1
+
+            if isPerson:
+                # Person found -> apply for the first time, then do not apply till they disapper. if they disappear
+                if personFound:
+                    if isTimer:
+                        print(f"person found again before timer passed reset {RESET_SEC} sec")
+                        timer.reset(RESET_SEC)
+                    else:
+                        print("person found again")
+                else:
+                    print("First person found! call applyData, isTimer:",isTimer)
+                    applyLightData(eval(current_lightData))
+                    personFound = True
+
+                # if person not found wait for 5 sec, and apply.
+                # if new person appears then apply 5 sec again.
+            else:
+                if not personFound:
+                    print("Just Waiting...")
+
+                else :
+                    if not isTimer:
+                        isTimer = True
+                        timer = TimerReset(RESET_SEC, applyLightData, args=[eval(current_lightData)], kwargs={})
+                        timer.start()
+                        print(f"person not found! wait {RESET_SEC} sec")
+                    else:
+                        print("waiting for timer to finish...")
+                # if person not found wait for 5 sec, and apply.
+                # if new person appears then apply 5 sec again.
 
         videostream.stop()
 
@@ -332,9 +394,9 @@ class CamHandler(BaseHTTPRequestHandler):
                 global imW, imH
                 global frame
                 global isVideo
+                global frame_rate_calc
                 if isVideo:
                     try:
-                        print("Showing From web")
                         img_str = cv2.imencode('.jpg', frame)[1].tostring()
                         self.send_header('Content-type', 'image/jpeg')
                         self.end_headers()
@@ -348,7 +410,7 @@ class CamHandler(BaseHTTPRequestHandler):
                 else:
                     try:
                         # gif 처리
-                        gif = cv2.VideoCapture('waiting.gif')
+                        gif = cv2.VideoCapture('waiting.mp4')
                         ret, gif_frame = gif.read()  # ret=True if it finds a frame else False.
                         frame_counter = 0
                         print(imW,imH)
@@ -366,7 +428,7 @@ class CamHandler(BaseHTTPRequestHandler):
                                 frame_counter = 0 #Or whatever as long as it is the same as next line
 
                             gif.set(cv2.CAP_PROP_POS_FRAMES, frame_counter)
-                            print("waiting...frame_counter:",frame_counter)
+                            print("waiting...:")
                             # Grab frame from video stream
                             img_str = cv2.imencode('.jpg', gif_frame)[1].tostring()
                             self.send_header('Content-type', 'image/jpeg')
@@ -374,7 +436,6 @@ class CamHandler(BaseHTTPRequestHandler):
                             self.wfile.write(img_str)
                             self.wfile.write(b"\r\n--jpgboundary\r\n")
                             frame_counter += 1
-                            print("else!", isVideo)
                             if isVideo:
                                 break
 
