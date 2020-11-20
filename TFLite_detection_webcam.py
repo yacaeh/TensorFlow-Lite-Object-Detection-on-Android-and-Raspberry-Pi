@@ -142,9 +142,9 @@ freq = cv2.getTickFrequency()
 # Source - Adrian Rosebrock, PyImageSearch: https://www.pyimagesearch.com/2015/12/28/increasing-raspberry-pi-fps-with-python-and-opencv/
 class VideoStream:
     """Camera object that controls video streaming from the Picamera"""
-    def __init__(self,resolution=(640,480),framerate=8):
+    def __init__(self,resolution=(640,480),framerate=8,video=0):
         # Initialize the PiCamera and the camera image stream
-        self.stream = cv2.VideoCapture(0)
+        self.stream = cv2.VideoCapture(video)
         ret = self.stream.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         ret = self.stream.set(3,resolution[0])
         ret = self.stream.set(4,resolution[1])
@@ -221,63 +221,31 @@ class checkingDate(threading.Thread):
             time.sleep(5)
 
 frame = None
-videostream = None
 c = checkingDate()
 c.start()
-
-class CamHandler(BaseHTTPRequestHandler):
-    print("Cam handler")
-
-    def do_GET(self):
+isVideo = False
+class initDetector(threading.Thread):
+    
+    def __init__(self):
         threading.Thread.__init__(self)
-        print("do_get")
-        if self.path.endswith('.mjpg'):
-            self.send_response(200)
-            self.send_header(
-                'Content-type',
-                'multipart/x-mixed-replace; boundary=--jpgboundary'
-            )
-            self.end_headers()
-            while True:
-                print("cam handler")
-                try:
 
-                    img_str = cv2.imencode('.jpg', videostream.read())[1].tostring()
-                    print(img_str)
-                    print(frame)
-                    self.send_header('Content-type', 'image/jpeg')
-                    self.end_headers()
-                    self.wfile.write(img_str)
-                    self.wfile.write(b"\r\n--jpgboundary\r\n")
+    def run(self):
+        global isVideo
+        global MODEL_NAME
+        global GRAPH_NAME
+        global LABELMAP_NAME
+        global min_conf_threshold
+        global resW, resH
+        global imW, imH
+        global use_TPU
+        global capture
+        global current_lightData
+        global isPerson 
+        global frame_rate_calc
+        global frame
+        global width, height
 
-                except KeyboardInterrupt:
-                    self.wfile.write(b"\r\n--jpgboundary--\r\n")
-                    break
-                except BrokenPipeError:
-                    continue
-            return
-
-        if self.path.endswith('.html'):
-            self.send_response(200)
-            self.send_header('Content-type', 'text/html')
-            self.end_headers()
-            self.wfile.write(b'<html><head></head><body>')
-            self.wfile.write(b'<img src="http://127.0.0.1:8080/cam.mjpg"/>')
-            self.wfile.write(b'</body></html>')
-            return
-
-
-class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
-    """Handle requests in a separate thread."""
-
-if __name__ == '__main__':
-    # 
-
-    try:
-        server = ThreadedHTTPServer(('localhost', 8080), CamHandler)
-        print("server started at http://127.0.0.1:8080/cam.html")
-        # Initialize video stream
-        videostream = VideoStream(resolution=(imW,imH),framerate=30).start()
+        videostream = VideoStream(resolution=(imW,imH),framerate=8,video=0).start()
         time.sleep(1)
         #for frame1 in camera.capture_continuous(rawCapture, format="bgr",use_video_port=True):
         while True:
@@ -287,6 +255,7 @@ if __name__ == '__main__':
 
             # Grab frame from video stream
             frame1 = videostream.read()
+            isVideo = True
 
             # Acquire frame and resize to expected shape [1xHxWx3]
             frame = frame1.copy()
@@ -332,6 +301,9 @@ if __name__ == '__main__':
                     if object_name == "person" and int(scores[i]*100 > 50):
                         print("person found! call applyData")
                         isPerson = True
+                        # if person not found wait for 5 sec, and apply.
+                        # if new person appears then apply 5 sec again.
+
                     
             # Draw framerate in corner of frame
             cv2.putText(frame,'FPS: {0:.2f}'.format(frame_rate_calc),(30,50),cv2.FONT_HERSHEY_SIMPLEX,1,(255,255,0),2,cv2.LINE_AA)
@@ -340,12 +312,100 @@ if __name__ == '__main__':
             time1 = (t2-t1)/freq
             frame_rate_calc= 1/time1
 
-            # yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n'+ cv2.imencode('.jpg', frame)[1].tostring() + b'\r\n')
         videostream.stop()
+
+class CamHandler(BaseHTTPRequestHandler):
+    print("Cam handler")
+    # Initialize video stream
+
+
+    def do_GET(self):
+
+        if self.path.endswith('.mjpg'):
+            self.send_response(200)
+            self.send_header(
+                'Content-type',
+                'multipart/x-mixed-replace; boundary=--jpgboundary'
+            )
+            self.end_headers()
+            while True:
+                global imW, imH
+                global frame
+                global isVideo
+                if isVideo:
+                    try:
+                        print("Showing From web")
+                        img_str = cv2.imencode('.jpg', frame)[1].tostring()
+                        self.send_header('Content-type', 'image/jpeg')
+                        self.end_headers()
+                        self.wfile.write(img_str)
+                        self.wfile.write(b"\r\n--jpgboundary\r\n")
+                    except KeyboardInterrupt:
+                        self.wfile.write(b"\r\n--jpgboundary--\r\n")
+                        break
+                    except BrokenPipeError:
+                        continue
+                else:
+                    try:
+                        # gif 처리
+                        gif = cv2.VideoCapture('waiting.gif')
+                        ret, gif_frame = gif.read()  # ret=True if it finds a frame else False.
+                        frame_counter = 0
+                        print(imW,imH)
+                        gif.set(3,imW)
+                        gif.set(4,imH)
+
+                        while ret:
+                            ret, gif_frame = gif.read()
+                            gif_frame = gif_frame.copy()
+                            gif_frame = cv2.resize(gif_frame, (imW,imH))
+                            # something to do 'frame'
+                            # ...
+                            # 다음 frame 읽음
+                            if frame_counter == gif.get(cv2.CAP_PROP_FRAME_COUNT):
+                                frame_counter = 0 #Or whatever as long as it is the same as next line
+
+                            gif.set(cv2.CAP_PROP_POS_FRAMES, frame_counter)
+                            print("waiting...frame_counter:",frame_counter)
+                            # Grab frame from video stream
+                            img_str = cv2.imencode('.jpg', gif_frame)[1].tostring()
+                            self.send_header('Content-type', 'image/jpeg')
+                            self.end_headers()
+                            self.wfile.write(img_str)
+                            self.wfile.write(b"\r\n--jpgboundary\r\n")
+                            frame_counter += 1
+                            print("else!", isVideo)
+                            if isVideo:
+                                break
+
+                    except Exception as e:
+                        print(e)
+                        return None
+            return
+
+        if self.path.endswith('.html'):
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            self.wfile.write(b'<html><head></head><body>')
+            self.wfile.write(b'<img src="http://127.0.0.1:8080/cam.mjpg"/>')
+            self.wfile.write(b'</body></html>')
+            return
+
+
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    """Handle requests in a separate thread."""
+
+if __name__ == '__main__':
+    server = ThreadedHTTPServer(('localhost', 8080), CamHandler)
+    initDetector().start()
+
+    try:
+        print("server started at http://127.0.0.1:8080/cam.html")
         server.serve_forever()
 
-
     except KeyboardInterrupt:
-        videostream.stop()
+        pass
+        sys.exit()
         server.socket.close()
     myLogger.info("Started!")

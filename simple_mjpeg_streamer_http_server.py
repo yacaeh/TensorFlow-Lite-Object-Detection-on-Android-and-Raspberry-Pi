@@ -57,10 +57,8 @@ def main():
     capture = cv2.VideoCapture(0)
     global img
     try:
-        server = ThreadedHTTPServer(('localhost', 8080), CamHandler)
+        server = ThreadedHTTPServer(('localhost', 8080), CamHandler).serve_forever()
         print("server started at http://127.0.0.1:8080/cam.html")
-        server.serve_forever()
-        print("serve forever!")
     except KeyboardInterrupt:
         capture.release()
         server.socket.close()
