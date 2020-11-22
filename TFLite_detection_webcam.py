@@ -18,6 +18,7 @@ import logging.config
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from TimerReset import TimerReset
+import ssl
 
 # Define and parse input arguments
 parser = argparse.ArgumentParser()
@@ -373,6 +374,7 @@ class initDetector(threading.Thread):
                         print("waiting for timer to finish...")
                 # if person not found wait for 5 sec, and apply.
                 # if new person appears then apply 5 sec again.
+            cv2.imwrite("frame.jpg",frame)
 
         videostream.stop()
 
@@ -382,6 +384,21 @@ class CamHandler(BaseHTTPRequestHandler):
 
 
     def do_GET(self):
+        if self.path.endswith('.jpg'):
+            self.path = './frame.jpg'
+            try:
+                f = open(self.path,'rb') #self.path has /test.html
+#note that this potentially makes every file on your computer readable by the internet
+
+                self.send_response(200)
+                self.send_header('Content-type','image/jpeg')
+                self.end_headers()
+                self.wfile.write(f.read())
+                f.close()
+                return
+
+            except IOError:
+                self.send_error(404,'File Not Found: %s' % self.path)
 
         if self.path.endswith('.mjpg'):
             self.send_response(200)
@@ -449,7 +466,7 @@ class CamHandler(BaseHTTPRequestHandler):
             self.send_header('Content-type', 'text/html')
             self.end_headers()
             self.wfile.write(b'<html><head></head><body>')
-            self.wfile.write(b'<img src="http://127.0.0.1:8080/cam.mjpg"/>')
+            self.wfile.write(b'<img src="https://127.0.0.1/cam.mjpg"/>')
             self.wfile.write(b'</body></html>')
             return
 
@@ -458,15 +475,20 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     """Handle requests in a separate thread."""
 
 if __name__ == '__main__':
-    server = ThreadedHTTPServer(('localhost', 8080), CamHandler)
+    server = ThreadedHTTPServer(('localhost', 443), CamHandler)
+    server.socket = ssl.wrap_socket(server.socket,
+    keyfile="keys/privatekey.pem", 
+    certfile='keys/certificate.pem', server_side=True)
+
     initDetector().start()
 
     try:
-        print("server started at http://127.0.0.1:8080/cam.html")
+        print("server started at https://127.0.0.1/cam.html")
         server.serve_forever()
 
     except KeyboardInterrupt:
         pass
         sys.exit()
+        os._exit(0)
         server.socket.close()
     myLogger.info("Started!")
