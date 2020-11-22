@@ -8,7 +8,6 @@ import sys
 import time
 from threading import Thread
 import importlib.util
-from flask import Flask,request, Response
 import csv
 import threading
 from datetime import datetime
@@ -19,6 +18,14 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from TimerReset import TimerReset
 import ssl
+import RPi.GPIO as GPIO
+
+GPIO_PWM=12
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(GPIO_PWM, GPIO.OUT)
+pwm_led=GPIO.PWM(GPIO_PWM, 100)
+pwm_led.start(0)
+GPIO.setwarnings(False)
 
 # Define and parse input arguments
 parser = argparse.ArgumentParser()
@@ -146,7 +153,7 @@ RESET_SEC = 5
 # Source - Adrian Rosebrock, PyImageSearch: https://www.pyimagesearch.com/2015/12/28/increasing-raspberry-pi-fps-with-python-and-opencv/
 class VideoStream:
     """Camera object that controls video streaming from the Picamera"""
-    def __init__(self,resolution=(640,480),framerate=8,video=0):
+    def __init__(self,resolution=(640,480),framerate=2,video=0):
         # Initialize the PiCamera and the camera image stream
         self.stream = cv2.VideoCapture(video)
         ret = self.stream.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
@@ -186,9 +193,9 @@ class VideoStream:
 
 
 def setLight(value):
-    # Not implemented
-    print("SET Light")
-    #raise NotImplementedError
+    global pwm_led
+    pwm_led.ChangeDutyCycle(value)
+    print("SET Light with value",value)
 
 def applyLightData(data):
     print(data[2],data[3],data[4])
@@ -310,7 +317,7 @@ class initDetector(threading.Thread):
             classes = interpreter.get_tensor(output_details[1]['index'])[0] # Class index of detected objects
             scores = interpreter.get_tensor(output_details[2]['index'])[0] # Confidence of detected objects
             #num = interpreter.get_tensor(output_details[3]['index'])[0]  # Total number of detected objects (inaccurate and not needed)
-
+            isPerson = False
             # Loop over all detections and draw detection box if confidence is above minimum threshold
             for i in range(len(scores)):
                 if ((scores[i] > min_conf_threshold) and (scores[i] <= 1.0)):
@@ -335,7 +342,9 @@ class initDetector(threading.Thread):
                     if object_name == "person" and int(scores[i]*100 > 50):
                         isPerson = True
                         break
-                    else: isPerson = False
+                    else: 
+                        print(object_name)
+                        isPerson = False
 
                     
             # Draw framerate in corner of frame
@@ -352,7 +361,7 @@ class initDetector(threading.Thread):
                         print(f"person found again before timer passed reset {RESET_SEC} sec")
                         timer.reset(RESET_SEC)
                     else:
-                        print("person found again")
+                        print("person found again",isPerson,personFound,isTimer)
                 else:
                     print("First person found! call applyData, isTimer:",isTimer)
                     applyLightData(eval(current_lightData))
@@ -453,6 +462,7 @@ class CamHandler(BaseHTTPRequestHandler):
                             self.wfile.write(img_str)
                             self.wfile.write(b"\r\n--jpgboundary\r\n")
                             frame_counter += 1
+                            #setLight(frame_counter*10)
                             if isVideo:
                                 break
 
@@ -466,7 +476,7 @@ class CamHandler(BaseHTTPRequestHandler):
             self.send_header('Content-type', 'text/html')
             self.end_headers()
             self.wfile.write(b'<html><head></head><body>')
-            self.wfile.write(b'<img src="https://127.0.0.1/cam.mjpg"/>')
+            self.wfile.write(b'<img src="https://127.0.0.1:1443/cam.mjpg"/>')
             self.wfile.write(b'</body></html>')
             return
 
@@ -475,19 +485,21 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     """Handle requests in a separate thread."""
 
 if __name__ == '__main__':
-    server = ThreadedHTTPServer(('localhost', 443), CamHandler)
+    server = ThreadedHTTPServer(('192.168.0.4', 1443), CamHandler)
     server.socket = ssl.wrap_socket(server.socket,
-    keyfile="keys/privatekey.pem", 
-    certfile='keys/certificate.pem', server_side=True)
+    keyfile="keys/private.key", 
+    certfile='keys/certificate.cert', server_side=True)
 
     initDetector().start()
 
     try:
-        print("server started at https://127.0.0.1/cam.html")
+        print("server started at https://127.0.0.1:1443/cam.html")
         server.serve_forever()
 
     except KeyboardInterrupt:
         pass
+        pwm_led.stop()
+        GPIO.cleanup()
         sys.exit()
         os._exit(0)
         server.socket.close()
