@@ -18,14 +18,18 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from TimerReset import TimerReset
 import ssl
-import RPi.GPIO as GPIO
+from urllib.parse import urlparse
+import json
+import cgi
 
-GPIO_PWM=12
-GPIO.setmode(GPIO.BCM)
-GPIO.setup(GPIO_PWM, GPIO.OUT)
-pwm_led=GPIO.PWM(GPIO_PWM, 100)
-pwm_led.start(0)
-GPIO.setwarnings(False)
+# import RPi.GPIO as GPIO
+
+# GPIO_PWM=12
+# GPIO.setmode(GPIO.BCM)
+# GPIO.setup(GPIO_PWM, GPIO.OUT)
+# pwm_led=GPIO.PWM(GPIO_PWM, 100)
+# pwm_led.start(0)
+# GPIO.setwarnings(False)
 
 # Define and parse input arguments
 parser = argparse.ArgumentParser()
@@ -193,8 +197,8 @@ class VideoStream:
 
 
 def setLight(value):
-    global pwm_led
-    pwm_led.ChangeDutyCycle(value)
+    #global pwm_led
+    #pwm_led.ChangeDutyCycle(value)
     print("SET Light with value",value)
 
 def applyLightData(data):
@@ -387,12 +391,23 @@ class initDetector(threading.Thread):
 
         videostream.stop()
 
+data = {"isAuto":True,"isLightSensor":True,"lightValue":80,"lightSensorValue":1000}
+
 class CamHandler(BaseHTTPRequestHandler):
     print("Cam handler")
     # Initialize video stream
 
 
     def do_GET(self):
+        global data
+        parsed_path = urlparse(self.path)
+        send_data = json.dumps(data)
+        if(parsed_path.path =='/data'):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(bytes(send_data, 'utf-8') )
+
+
         if self.path.endswith('.jpg'):
             self.path = './frame.jpg'
             try:
@@ -476,30 +491,84 @@ class CamHandler(BaseHTTPRequestHandler):
             self.send_header('Content-type', 'text/html')
             self.end_headers()
             self.wfile.write(b'<html><head></head><body>')
-            self.wfile.write(b'<img src="https://127.0.0.1:1443/cam.mjpg"/>')
+            self.wfile.write(b'<img src="http://192.168.124.41:1443/cam.mjpg"/>')
             self.wfile.write(b'</body></html>')
             return
 
+    def do_POST(self):
+        try:
+            if self.path.endswith("/mode"):
+                ctype, pdict = cgi.parse_header(self.headers['content-type'])
+                pdict['boundary'] = bytes(pdict['boundary'], "utf-8")
+                if ctype == 'multipart/form-data':
+                    fields = cgi.parse_multipart(self.rfile, pdict)
+                    print("Fields value is", fields)
+                    value = fields.get('type')
+                    value = value[0].decode("utf-8")
+
+                    if value == "manual":
+                        print("Change to manual mode")
+
+                    elif value == "auto":
+                        print("Change to auto mode")
+                    
+                    elif value == "light_sensor":
+                        print("apply Light sensor")
+
+                    elif value == "no_light_sensor":
+                        print("not apply Light sensor")
+                    else:
+                        print("unknown vlaue")
+
+                    print("value applied is ", value)
+                    
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/text')
+                    self.end_headers()
+                    self.wfile.write(value.encode(encoding='utf_8'))
+
+            if self.path.endswith("/light"):
+                ctype, pdict = cgi.parse_header(self.headers['content-type'])
+                pdict['boundary'] = bytes(pdict['boundary'], "utf-8")
+                if ctype == 'multipart/form-data':
+                    fields = cgi.parse_multipart(self.rfile, pdict)
+                    print("Fields value is", fields)
+                    value = fields.get('value')
+                    value = value[0].decode("utf-8")
+                    print("value applied is ", value)
+
+                    
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/text')
+                    self.end_headers()
+                    self.wfile.write(value.encode(encoding='utf_8'))
+
+        except:
+            self.send_response(400)
+            self.send_header('Content-Type', 'application/text')
+            self.end_headers()
+            returnVal = 'error'
+            self.wfile.write(returnVal.encode(encoding='utf_8'))
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     """Handle requests in a separate thread."""
 
 if __name__ == '__main__':
-    server = ThreadedHTTPServer(('192.168.0.4', 1443), CamHandler)
-    server.socket = ssl.wrap_socket(server.socket,
-    keyfile="keys/private.key", 
-    certfile='keys/certificate.cert', server_side=True)
+    server = ThreadedHTTPServer(('192.168.124.41', 1443), CamHandler)
+    # server.socket = ssl.wrap_socket(server.socket,
+    # keyfile="keys/private.key", 
+    # certfile='keys/certificate.cert', server_side=True)
 
     initDetector().start()
 
     try:
-        print("server started at https://127.0.0.1:1443/cam.html")
+        print("server started at https://192.168.124.41:1443/cam.html")
         server.serve_forever()
 
     except KeyboardInterrupt:
         pass
-        pwm_led.stop()
-        GPIO.cleanup()
+        #pwm_led.stop()
+        #GPIO.cleanup()
         sys.exit()
         os._exit(0)
         server.socket.close()
