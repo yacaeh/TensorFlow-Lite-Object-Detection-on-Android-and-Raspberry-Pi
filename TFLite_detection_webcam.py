@@ -1,3 +1,4 @@
+
 #!/tflite1-env1
 # Import packages
 import os
@@ -21,19 +22,21 @@ import ssl
 from urllib.parse import urlparse
 import json
 import cgi
+import socket
+myip = "192.168.0.4" #socket.gethostbyname(socket.gethostname())
 
-# import RPi.GPIO as GPIO
+import RPi.GPIO as GPIO
 
-# GPIO_PWM=12
-# GPIO.setmode(GPIO.BCM)
-# GPIO.setup(GPIO_PWM, GPIO.OUT)
-# pwm_led=GPIO.PWM(GPIO_PWM, 100)
-# pwm_led.start(0)
-# GPIO.setwarnings(False)
+GPIO_PWM=12
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(GPIO_PWM, GPIO.OUT)
+pwm_led=GPIO.PWM(GPIO_PWM, 100)
+pwm_led.start(0)
+GPIO.setwarnings(False)
 
 
 # Light sensor related variables
-#import smbus # i2c library
+import smbus # i2c library
 import time
 # i2c channel number
 I2C_CH=1
@@ -50,7 +53,7 @@ ONETIME_H_RES_MODE2 = 0X21
 ONETIME_L_RES_MODE = 0X23
 
 # create i2c channel library
-#i2c=smbus.SMBus(I2C_CH)
+i2c=smbus.SMBus(I2C_CH)
 # read 2BYTE as CONT_HRES_MODE
 time.sleep(1)
 
@@ -95,21 +98,21 @@ log_dir = '{}/logs'.format(current_dir)
 if not os.path.exists(log_dir):
     os.makedirs(log_dir)
 
-# 로거 생성
-myLogger = logging.getLogger('test') # 로거 이름: test
-myLogger.setLevel(logging.INFO) # 로깅 수준: INFO
 
-# 핸들러 생성
+myLogger = logging.getLogger('test')
+myLogger.setLevel(logging.INFO)
+
+
 file_handler = logging.handlers.TimedRotatingFileHandler(
   filename=log_dir+'/'+LOG_FILENAME, when='midnight', interval=1,  encoding='utf-8'
-  ) # 자정마다 한 번씩 로테이션
-file_handler.suffix = 'log-%Y%m%d' # 로그 파일명 날짜 기록 부분 포맷 지정 
+  )
+file_handler.suffix = 'log-%Y%m%d'
 
-myLogger.addHandler(file_handler) # 로거에 핸들러 추가
+myLogger.addHandler(file_handler)
 formatter = logging.Formatter(
   '%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] %(message)s'
   )
-file_handler.setFormatter(formatter) # 핸들러에 로깅 포맷 할당
+file_handler.setFormatter(formatter)
 
 # Import TensorFlow libraries
 # If tflite_runtime is installed, import interpreter from tflite_runtime, else import from regular tensorflow
@@ -200,10 +203,10 @@ class LightSensor(threading.Thread):
     def run(self):
         while True:
             try:
-                # luxBytes = i2c.read_i2c_block_data(BH1750_DEV_ADDR, CONT_H_RES_MODE, 2)
+                luxBytes = i2c.read_i2c_block_data(BH1750_DEV_ADDR, CONT_H_RES_MODE, 2)
             # type conversion BYTE to INT
-                # lux=int.from_bytes(luxBytes, byteorder='big')
-                lux = lux*10
+                lux=int.from_bytes(luxBytes, byteorder='big')
+                # lux = lux*10
                 print('{0} lux'.format(lux))
                 lightSensorValue = lux
 
@@ -292,8 +295,8 @@ class VideoStream:
 
 
 def setLight(value):
-    #global pwm_led
-    #pwm_led.ChangeDutyCycle(value)
+    global pwm_led
+    pwm_led.ChangeDutyCycle(value)
     print("SET Light with value",value)
 
 def applySensorLightData(data):
@@ -310,8 +313,8 @@ def applySensorLightData(data):
         exceedFound = False
         
     # lightValue = data[3] if isPerson else data[4]
-    print(f"Applying Light Data -isLightExceed: {str(isLightExceed)} Changed light to:{str(data[4])}")
-    myLogger.info(f"Applying Light Data -isLightExceed: {str(isLightExceed)} Changed light to:{str(data[4])}")
+    print(f"Applying Light Data -isLightExceed: {str(isLightExceed)} Changed light to:{str(lightValue)}")
+    myLogger.info(f"Applying Light Data -isLightExceed: {str(isLightExceed)} Changed light to:{str(lightValue)}")
     setLight(lightValue)
 
 def applyLightData(data):
@@ -328,8 +331,8 @@ def applyLightData(data):
         personFound = False
         
     # lightValue = data[3] if isPerson else data[4]
-    print(f"Applying Light Data -isPerson: {str(isPerson)} Changed light to:{str(data[4])}")
-    myLogger.info(f"Applying Light Data -isPerson: {str(isPerson)} Changed light to:{str(data[4])}")
+    print(f"Applying Light Data -isPerson: {str(isPerson)} Changed light to:{str(lightValue)}")
+    myLogger.info(f"Applying Light Data -isPerson: {str(isPerson)} Changed light to:{str(lightValue)}")
     setLight(lightValue)
 
 class checkingDate(threading.Thread):
@@ -346,7 +349,7 @@ class checkingDate(threading.Thread):
             month = currentTime.strftime("%m")
             hour = currentTime.strftime("%H")
             
-            print('현재 월, 시간:' + month, hour)
+            
             line_to_read = (int(month)-1)*24+int(hour)
             csvData = open('lightData.csv', 'r')
             lines = csvData.readlines()
@@ -539,7 +542,7 @@ class CamHandler(BaseHTTPRequestHandler):
         global isLightSensor
         global lightValue
         global lightSensorValue
-
+        global myip
         parsed_path = urlparse(self.path)
         print(data)
         send_data = json.dumps(data)
@@ -591,7 +594,7 @@ class CamHandler(BaseHTTPRequestHandler):
                         continue
                 else:
                     try:
-                        # gif 처리
+                        
                         gif = cv2.VideoCapture('waiting.mp4')
                         ret, gif_frame = gif.read()  # ret=True if it finds a frame else False.
                         frame_counter = 0
@@ -605,7 +608,7 @@ class CamHandler(BaseHTTPRequestHandler):
                             gif_frame = cv2.resize(gif_frame, (imW,imH))
                             # something to do 'frame'
                             # ...
-                            # 다음 frame 읽음
+                            
                             if frame_counter == gif.get(cv2.CAP_PROP_FRAME_COUNT):
                                 frame_counter = 0 #Or whatever as long as it is the same as next line
 
@@ -632,12 +635,12 @@ class CamHandler(BaseHTTPRequestHandler):
             self.send_header('Content-type', 'text/html')
             self.end_headers()
             self.wfile.write(b'<html><head></head><body>')
-            self.wfile.write(b'<img src="http://192.168.124.41:1443/cam.mjpg"/>')
+            self.wfile.write(b'<img src="http://"+myip+":1443/cam.mjpg"/>')
             self.wfile.write(b'</body></html>')
             return
 
     def do_POST(self):
-        try:
+        #try:
             global data
             global isAuto
             global isLightSensor
@@ -701,31 +704,31 @@ class CamHandler(BaseHTTPRequestHandler):
                     self.end_headers()
                     self.wfile.write(value.encode(encoding='utf_8'))
 
-        except:
-            self.send_response(400)
-            self.send_header('Content-Type', 'application/text')
-            self.end_headers()
-            returnVal = 'error'
-            self.wfile.write(returnVal.encode(encoding='utf_8'))
+       # except:
+       #     self.send_response(400)
+       #     self.send_header('Content-Type', 'application/text')
+       #     self.end_headers()
+       #     returnVal = 'error'
+       #     self.wfile.write(returnVal.encode(encoding='utf_8'))
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     """Handle requests in a separate thread."""
 
 if __name__ == '__main__':
-    server = ThreadedHTTPServer(('192.168.124.41', 1443), CamHandler)
+    server = ThreadedHTTPServer((myip, 1443), CamHandler)
     # server.socket = ssl.wrap_socket(server.socket,
     # keyfile="keys/private.key", 
     # certfile='keys/certificate.cert', server_side=True)
     initDetector().start()
 
     try:
-        print("server started at https://192.168.124.41:1443/cam.html")
+        print("server started at http://"+myip+":1443/cam.html")
         server.serve_forever()
 
     except KeyboardInterrupt:
         pass
-        #pwm_led.stop()
-        #GPIO.cleanup()
+        pwm_led.stop()
+        GPIO.cleanup()
         sys.exit()
         os._exit(0)
         server.socket.close()
