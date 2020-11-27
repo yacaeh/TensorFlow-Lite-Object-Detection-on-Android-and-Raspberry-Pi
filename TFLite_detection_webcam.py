@@ -31,6 +31,31 @@ import cgi
 # pwm_led.start(0)
 # GPIO.setwarnings(False)
 
+
+# Light sensor related variables
+#import smbus # i2c library
+import time
+# i2c channel number
+I2C_CH=1
+
+# BH1750 address
+BH1750_DEV_ADDR=0x23
+
+
+CONT_H_RES_MODE = 0X10
+CONT_H_RES_MODE2 = 0X11
+CONT_L_RES_MODE = 0X13
+ONETIME_H_RES_MODE = 0X20
+ONETIME_H_RES_MODE2 = 0X21
+ONETIME_L_RES_MODE = 0X23
+
+# create i2c channel library
+#i2c=smbus.SMBus(I2C_CH)
+# read 2BYTE as CONT_HRES_MODE
+time.sleep(1)
+
+
+
 # Define and parse input arguments
 parser = argparse.ArgumentParser()
 parser.add_argument('--modeldir', help='Folder the .tflite file is located in',
@@ -153,6 +178,76 @@ freq = cv2.getTickFrequency()
 # Reset Timer Value
 RESET_SEC = 5
 
+
+class LightSensor(threading.Thread):
+    global lightSensorValue
+    global current_lightData
+    global exceedFound
+    global isSensorTimer
+    global RESET_SEC
+
+    sensorTimer = None
+    isSensorTimer = False
+    exceedFound = False
+
+    def __init__(self):
+        self._start = None
+        threading.Thread.__init__(self)
+
+    def stop(self):
+        self.__stop = True
+
+    def run(self):
+        while True:
+            try:
+                # luxBytes = i2c.read_i2c_block_data(BH1750_DEV_ADDR, CONT_H_RES_MODE, 2)
+            # type conversion BYTE to INT
+                # lux=int.from_bytes(luxBytes, byteorder='big')
+                lux = lux*10
+                print('{0} lux'.format(lux))
+                lightSensorValue = lux
+
+                isLihgtExceed = False
+                isSensorTimer = False
+                if lux > 2000:
+                    isLightExceed = True
+                else:
+                    isLihgtExceed = False
+
+                exceedFound = False
+                if isLihgtExceed:
+                    if exceedFound:
+                        if isSensorTimer:
+                            print(f"exceed again before timer passed reset {RESET_SEC} sec")
+                            sensorTimer.reset(RESET_SEC)
+                        else:
+                            print("exceedagain")
+                
+                    else:
+                        print("First exceed")
+                        setLight(100)
+                        exceedFound = True
+                
+                else:
+                    if not exceedFound:
+                        print("justwaiting light...")
+                    else :
+                        if not isSensorTimer:
+                            isSensorTimer = True
+                            sensorTimer = TimerReset(RESET_SEC, applySensorLightData, args=[eval(current_lightData)], kwargs={})
+                            sensorTimer.start()
+                            print(f"person not found! wait {RESET_SEC} sec")
+                        else:
+                            print("waiting for timer to finish...")
+
+
+
+                time.sleep(1)
+            except IOError:
+                print("IOERROR!")
+                pass
+
+
 # Define VideoStream class to handle streaming of video from webcam in separate processing thread
 # Source - Adrian Rosebrock, PyImageSearch: https://www.pyimagesearch.com/2015/12/28/increasing-raspberry-pi-fps-with-python-and-opencv/
 class VideoStream:
@@ -201,11 +296,30 @@ def setLight(value):
     #pwm_led.ChangeDutyCycle(value)
     print("SET Light with value",value)
 
+def applySensorLightData(data):
+    print(data[2],data[3],data[4])
+    global isLightExceed
+    global exceedFound
+    global isLightTimer
+
+    if isLightExceed:
+        lightValue = data[3]
+    else :
+        lightValue = data[4]
+        isLightTimer = False
+        exceedFound = False
+        
+    # lightValue = data[3] if isPerson else data[4]
+    print(f"Applying Light Data -isLightExceed: {str(isLightExceed)} Changed light to:{str(data[4])}")
+    myLogger.info(f"Applying Light Data -isLightExceed: {str(isLightExceed)} Changed light to:{str(data[4])}")
+    setLight(lightValue)
+
 def applyLightData(data):
     print(data[2],data[3],data[4])
     global isPerson
     global personFound
     global isTimer
+
     if isPerson:
         lightValue = data[3]
     else :
@@ -391,16 +505,43 @@ class initDetector(threading.Thread):
 
         videostream.stop()
 
-data = {"isAuto":True,"isLightSensor":True,"lightValue":80,"lightSensorValue":1000}
+isAuto =True
+isLightSensor = True
+lightValue = 80
+lightSensorValue = 0
+
+data = {"isAuto":isAuto,"isLightSensor":isLightSensor,"lightValue":lightValue,"lightSensorValue":lightSensorValue}
+
+l = LightSensor()
+l.start()
 
 class CamHandler(BaseHTTPRequestHandler):
+    def _send_cors_headers(self):
+        """ Sets headers required for CORS """
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "x-api-key,Content-Type")
+
+    def send_dict_response(self, d):
+        """ Sends a dictionary (JSON) back to the client """
+        self.wfile.write(bytes(dumps(d), "utf8"))
+
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self._send_cors_headers()
+        self.end_headers()
+
     print("Cam handler")
     # Initialize video stream
-
-
     def do_GET(self):
         global data
+        global isAuto
+        global isLightSensor
+        global lightValue
+        global lightSensorValue
+
         parsed_path = urlparse(self.path)
+        print(data)
         send_data = json.dumps(data)
         if(parsed_path.path =='/data'):
             self.send_response(200)
@@ -497,6 +638,12 @@ class CamHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
+            global data
+            global isAuto
+            global isLightSensor
+            global lightValue
+            global lightSensorValue
+
             if self.path.endswith("/mode"):
                 ctype, pdict = cgi.parse_header(self.headers['content-type'])
                 pdict['boundary'] = bytes(pdict['boundary'], "utf-8")
@@ -507,21 +654,31 @@ class CamHandler(BaseHTTPRequestHandler):
                     value = value[0].decode("utf-8")
 
                     if value == "manual":
+                        isAuto = False
+                        data["isAuto"] = isAuto
                         print("Change to manual mode")
 
                     elif value == "auto":
+                        isAuto = True
+                        data["isAuto"] = isAuto
                         print("Change to auto mode")
                     
                     elif value == "light_sensor":
+                        isLightSensor = True
+                        data["isLightSensor"] = isLightSensor
                         print("apply Light sensor")
 
                     elif value == "no_light_sensor":
+                        isLightSensor = False
+                        data["isLightSensor"] = isLightSensor
                         print("not apply Light sensor")
                     else:
                         print("unknown vlaue")
 
                     print("value applied is ", value)
-                    
+            
+                    print(data)
+
                     self.send_response(200)
                     self.send_header('Content-Type', 'application/text')
                     self.end_headers()
@@ -536,8 +693,9 @@ class CamHandler(BaseHTTPRequestHandler):
                     value = fields.get('value')
                     value = value[0].decode("utf-8")
                     print("value applied is ", value)
-
-                    
+                    lightValue = value
+                    data["lightValue"] = lightValue
+                    setLight(lightValue)
                     self.send_response(200)
                     self.send_header('Content-Type', 'application/text')
                     self.end_headers()
@@ -558,7 +716,6 @@ if __name__ == '__main__':
     # server.socket = ssl.wrap_socket(server.socket,
     # keyfile="keys/private.key", 
     # certfile='keys/certificate.cert', server_side=True)
-
     initDetector().start()
 
     try:
