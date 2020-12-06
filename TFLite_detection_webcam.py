@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 import json
 import cgi
 import socket
-myip = "192.168.0.7" #socket.gethostbyname(socket.gethostname())
+myip = "192.168.0.4" #socket.gethostbyname(socket.gethostname())
 
 import RPi.GPIO as GPIO
 
@@ -246,10 +246,13 @@ class LightSensor(threading.Thread):
 
 
                 lightSensorState = True
+                data["lightSensorState"] = lightSensorState
                 time.sleep(1)
             except IOError:
                 print("IOERROR!")
                 lightSensorState = False
+                data["lightSensorState"] = lightSensorState
+                print(lightSensorState)
                 pass
 
 
@@ -265,6 +268,7 @@ class VideoStream:
         ret = self.stream.set(3,resolution[0])
         ret = self.stream.set(4,resolution[1])
         cameraState = True    
+        data["cameraState"] = cameraState
         # Read first frame from the stream
         (self.grabbed, self.frame) = self.stream.read()
 
@@ -290,11 +294,13 @@ class VideoStream:
 
     def read(self):
         cameraState = True
+        data["cameraState"] = cameraState
 	# Return the most recent frame
         return self.frame
 
     def stop(self):
         cameraState = False
+        data["cameraState"] = cameraState
 	# Indicate that the camera and thread should be stopped
         self.stopped = True
 
