@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 import json
 import cgi
 import socket
-myip = "192.168.0.4" #socket.gethostbyname(socket.gethostname())
+myip = "192.168.0.7" #socket.gethostbyname(socket.gethostname())
 
 import RPi.GPIO as GPIO
 
@@ -188,6 +188,7 @@ class LightSensor(threading.Thread):
     global exceedFound
     global isSensorTimer
     global RESET_SEC
+    global lightSensorState
 
     sensorTimer = None
     isSensorTimer = False
@@ -209,7 +210,7 @@ class LightSensor(threading.Thread):
                 # lux = lux*10
                 print('{0} lux'.format(lux))
                 lightSensorValue = lux
-
+                data["lightSensorValue"] = lightSensorValue
                 isLihgtExceed = False
                 isSensorTimer = False
                 if lux > 2000:
@@ -244,16 +245,18 @@ class LightSensor(threading.Thread):
                             print("waiting for timer to finish...")
 
 
-
+                lightSensorState = True
                 time.sleep(1)
             except IOError:
                 print("IOERROR!")
+                lightSensorState = False
                 pass
 
 
 # Define VideoStream class to handle streaming of video from webcam in separate processing thread
 # Source - Adrian Rosebrock, PyImageSearch: https://www.pyimagesearch.com/2015/12/28/increasing-raspberry-pi-fps-with-python-and-opencv/
 class VideoStream:
+    global cameraState
     """Camera object that controls video streaming from the Picamera"""
     def __init__(self,resolution=(640,480),framerate=2,video=0):
         # Initialize the PiCamera and the camera image stream
@@ -261,7 +264,7 @@ class VideoStream:
         ret = self.stream.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         ret = self.stream.set(3,resolution[0])
         ret = self.stream.set(4,resolution[1])
-            
+        cameraState = True    
         # Read first frame from the stream
         (self.grabbed, self.frame) = self.stream.read()
 
@@ -286,17 +289,21 @@ class VideoStream:
             (self.grabbed, self.frame) = self.stream.read()
 
     def read(self):
+        cameraState = True
 	# Return the most recent frame
         return self.frame
 
     def stop(self):
+        cameraState = False
 	# Indicate that the camera and thread should be stopped
         self.stopped = True
 
 
 def setLight(value):
+    global lightValue
     global pwm_led
     pwm_led.ChangeDutyCycle(value)
+    lightValue = value
     print("SET Light with value",value)
 
 def applySensorLightData(data):
@@ -512,18 +519,20 @@ isAuto =True
 isLightSensor = True
 lightValue = 80
 lightSensorValue = 0
-
-data = {"isAuto":isAuto,"isLightSensor":isLightSensor,"lightValue":lightValue,"lightSensorValue":lightSensorValue}
+cameraState = True
+lightSensorState = True
+data = {"isAuto":isAuto,"isLightSensor":isLightSensor,"lightValue":lightValue,"lightSensorValue":lightSensorValue, "lightSensorState":lightSensorState,"cameraState":cameraState}
 
 l = LightSensor()
 l.start()
 
 class CamHandler(BaseHTTPRequestHandler):
-    def _send_cors_headers(self):
-        """ Sets headers required for CORS """
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "x-api-key,Content-Type")
+
+    def end_headers(self):
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET')
+        self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate')
+        return super(CamHandler, self).end_headers()
 
     def send_dict_response(self, d):
         """ Sends a dictionary (JSON) back to the client """
@@ -635,26 +644,30 @@ class CamHandler(BaseHTTPRequestHandler):
             self.send_header('Content-type', 'text/html')
             self.end_headers()
             self.wfile.write(b'<html><head></head><body>')
-            self.wfile.write(b'<img src="http://"+myip+":1443/cam.mjpg"/>')
+            self.wfile.write(b'<img src="https://"+myip+":1443/cam.mjpg"/>')
             self.wfile.write(b'</body></html>')
             return
 
     def do_POST(self):
-        #try:
+        try:
             global data
             global isAuto
             global isLightSensor
             global lightValue
             global lightSensorValue
-
+            global current_lightData
+            
             if self.path.endswith("/mode"):
-                ctype, pdict = cgi.parse_header(self.headers['content-type'])
+                ctype, pdict = cgi.parse_header(self.headers.get('content-type'))
                 pdict['boundary'] = bytes(pdict['boundary'], "utf-8")
+                content_len = int(self.headers.get('Content-length'))
+                pdict['CONTENT-LENGTH'] = content_len
+                
                 if ctype == 'multipart/form-data':
                     fields = cgi.parse_multipart(self.rfile, pdict)
                     print("Fields value is", fields)
                     value = fields.get('type')
-                    value = value[0].decode("utf-8")
+                    value = value[0]
 
                     if value == "manual":
                         isAuto = False
@@ -664,16 +677,19 @@ class CamHandler(BaseHTTPRequestHandler):
                     elif value == "auto":
                         isAuto = True
                         data["isAuto"] = isAuto
+                        applyLightData(eval(current_lightData))
                         print("Change to auto mode")
                     
                     elif value == "light_sensor":
                         isLightSensor = True
                         data["isLightSensor"] = isLightSensor
+                        applyLightData(eval(current_lightData))
                         print("apply Light sensor")
 
                     elif value == "no_light_sensor":
                         isLightSensor = False
                         data["isLightSensor"] = isLightSensor
+                        applyLightData(eval(current_lightData))
                         print("not apply Light sensor")
                     else:
                         print("unknown vlaue")
@@ -688,13 +704,16 @@ class CamHandler(BaseHTTPRequestHandler):
                     self.wfile.write(value.encode(encoding='utf_8'))
 
             if self.path.endswith("/light"):
-                ctype, pdict = cgi.parse_header(self.headers['content-type'])
+                ctype, pdict = cgi.parse_header(self.headers.get('content-type'))
                 pdict['boundary'] = bytes(pdict['boundary'], "utf-8")
+                content_len = int(self.headers.get('Content-length'))
+                pdict['CONTENT-LENGTH'] = content_len
+                
                 if ctype == 'multipart/form-data':
                     fields = cgi.parse_multipart(self.rfile, pdict)
                     print("Fields value is", fields)
                     value = fields.get('value')
-                    value = value[0].decode("utf-8")
+                    value = int(value[0])
                     print("value applied is ", value)
                     lightValue = value
                     data["lightValue"] = lightValue
@@ -704,21 +723,21 @@ class CamHandler(BaseHTTPRequestHandler):
                     self.end_headers()
                     self.wfile.write(value.encode(encoding='utf_8'))
 
-       # except:
-       #     self.send_response(400)
-       #     self.send_header('Content-Type', 'application/text')
-       #     self.end_headers()
-       #     returnVal = 'error'
-       #     self.wfile.write(returnVal.encode(encoding='utf_8'))
+        except:
+            self.send_response(400)
+            self.send_header('Content-Type', 'application/text')
+            self.end_headers()
+            returnVal = 'error'
+            self.wfile.write(returnVal.encode(encoding='utf_8'))
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     """Handle requests in a separate thread."""
 
 if __name__ == '__main__':
     server = ThreadedHTTPServer((myip, 1443), CamHandler)
-    # server.socket = ssl.wrap_socket(server.socket,
-    # keyfile="keys/private.key", 
-    # certfile='keys/certificate.cert', server_side=True)
+#    server.socket = ssl.wrap_socket(server.socket,
+#    keyfile="keys/private.pem", 
+#    certfile='keys/cert.pem', server_side=True)
     initDetector().start()
 
     try:
